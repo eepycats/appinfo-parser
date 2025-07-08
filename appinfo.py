@@ -179,7 +179,7 @@ def parse_appinfo(f):
     return parsers[magic](f)
 
 @appinfo_parser(AppInfoVersion.Version28)
-def parse_27(f) -> dict[tuple]:
+def parse_28(f) -> dict[tuple]:
     parsed_infos = {}
     #magic, = stream_unpack(f, ">I")
     universe, = stream_unpack(f, "<I")
