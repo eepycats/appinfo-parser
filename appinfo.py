@@ -28,32 +28,39 @@ def try_decode(data: bytes) -> str:
         except UnicodeDecodeError as e:
             print(f"failed to decode {e} {data}")
 
-def parse_vdf(bs) -> dict:
+def read_key(bs, stringtable = None):
+    if stringtable:
+        idx, = struct.unpack("<I", bs.read(4))
+        return try_decode(stringtable[idx])
+    return try_decode(read_string(bs))
+
+def parse_vdf(bs, stringtable = None) -> dict:
     res = {}
     while True:
         c = bs.read(1)
+        if c == b"\x08":
+            break
+        k = read_key(bs, stringtable)
         if c == b"\x00":
-            k = try_decode(read_string(bs))
-            v = parse_vdf(bs)
+            v = parse_vdf(bs, stringtable)
             res[k] = v
         elif c == b"\x01":
-            k = try_decode(read_string(bs))
             v = try_decode(read_string(bs))
             res[k] = v
         elif c == b"\x02":
-            k = try_decode(read_string(bs))
             v = int(struct.unpack("<I", bs.read(4))[0])
             res[k] = v
         elif c == b"\x03":
-            k = try_decode(read_string(bs))
             v = float(struct.unpack("<f", bs.read(4))[0])
-            res[k] = v   
-        elif c == b"\x08":
-            break
+            res[k] = v
+        elif c == b"\x07":
+            v = int(struct.unpack("<Q", bs.read(8))[0])
+            res[k] = v
         else:
-            raise Exception("bad type", c)
+            raise Exception("bad type", c, bs.tell(),bs.read(10), res)
         
     return res
+
 
 def appinfo_parser(version):
     def decorator(func):
@@ -71,7 +78,7 @@ class AppInfoVersion(IntEnum):
     Version26 = 0x26445607 # circa jan 2013 or very late 2013, first known jan 2013 - ????, same as 27 w 0'd out sha and picstoken, but with section split appinfo instead? (since 2014 hash and picstoken are actually populated)
     Version27 = 0x27445607 # circa ???? (at least 2017) - 2020, same as above but not split?
     Version28 = 0x28445607 # december 2022 - june 2024, added binary vdf sha
-
+    Version29 = 0x29445607
 class AppInfoSection(IntEnum):
     Unknown = 0
     All = 1
@@ -190,9 +197,35 @@ def parse_28(f) -> dict[tuple]:
             break
         appid,size,state,timestamp,token_probably,sha,changeid, shahash = struct.unpack("<IIIIQ20sI20s", (buffer))
 
-        data = f.read(size)
+        data = f.read(size-60)
         if hashlib.sha1(data).digest() != shahash:
             raise Exception("bad appinfo section hash")
         fvdf = io.BytesIO(data)
         parsed_infos[appid] = (AppInfoMetadata(size,state,timestamp,token_probably,sha,changeid), parse_vdf(fvdf))
+    return parsed_infos
+
+@appinfo_parser(AppInfoVersion.Version29)
+def parse_29(f) -> dict[tuple]:
+    parsed_infos = {}
+    #magic, = stream_unpack(f, ">I")
+    universe, stringtable = stream_unpack(f, "<IQ")
+    ctell = f.tell()
+    f.seek(stringtable)
+    _strings = {}
+    strc, = stream_unpack(f, "<I")
+    for i in range(strc):
+        s = read_string(f)
+        _strings[i] = s
+    f.seek(ctell)
+    #if not magic == AppInfoVersion.TYPE_STEAM3_27:
+    #    raise Exception("bad magic")
+    while buffer := f.read(20+20+8+20):
+        if buffer[:4] == b"\x00\x00\x00\x00":
+            break
+        appid,size,state,timestamp,token_probably,sha,changeid, shahash = struct.unpack("<IIIIQ20sI20s", buffer)
+        data = f.read(size-60)
+        if hashlib.sha1(data).digest() != shahash:
+            raise Exception("bad appinfo section hash")
+        fvdf = io.BytesIO(data)
+        parsed_infos[appid] = (AppInfoMetadata(size,state,timestamp,token_probably,sha,changeid), parse_vdf(fvdf, _strings))
     return parsed_infos
